@@ -106,6 +106,14 @@ func (s *CookieStore) New(r *http.Request, name string) (*Session, error) {
 // Save adds a single session to the response.
 func (s *CookieStore) Save(r *http.Request, w http.ResponseWriter,
 	session *Session) error {
+	// Delete the cookie if max-age is negative. The session values must not
+	// be encoded into the deletion response: with no encryption key configured
+	// the codec only signs the payload, so its base64 contents remain readable
+	// and the session meant to be destroyed would be handed back to the client.
+	if session.Options.MaxAge < 0 {
+		http.SetCookie(w, NewCookie(session.Name(), "", session.Options))
+		return nil
+	}
 	encoded, err := securecookie.EncodeMulti(session.Name(), session.Values,
 		s.Codecs...)
 	if err != nil {
@@ -210,14 +218,15 @@ var base32RawStdEncoding = base32.StdEncoding.WithPadding(base32.NoPadding)
 
 // Save adds a single session to the response.
 //
-// If the Options.MaxAge of the session is <= 0 then the session file will be
-// deleted from the store path. With this process it enforces the properly
-// session cookie handling so no need to trust in the cookie management in the
-// web browser.
+// If the Options.MaxAge of the session is negative then the session file will
+// be deleted from the store path. A MaxAge of 0 follows the Options contract
+// and produces a browser-session cookie without a Max-Age attribute, leaving
+// the session file in place; server-side cleanup of such files is the
+// responsibility of the deployment.
 func (s *FilesystemStore) Save(r *http.Request, w http.ResponseWriter,
 	session *Session) error {
-	// Delete if max-age is <= 0
-	if session.Options.MaxAge <= 0 {
+	// Delete if max-age is negative
+	if session.Options.MaxAge < 0 {
 		if err := s.erase(session); err != nil && !os.IsNotExist(err) {
 			return err
 		}
