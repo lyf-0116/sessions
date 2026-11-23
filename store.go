@@ -218,8 +218,18 @@ func (s *FilesystemStore) Save(r *http.Request, w http.ResponseWriter,
 	session *Session) error {
 	// Delete if max-age is <= 0
 	if session.Options.MaxAge <= 0 {
-		if err := s.erase(session); err != nil && !os.IsNotExist(err) {
-			return err
+		// Revoke the session identifier, not just the backing file.
+		// Otherwise the same session object saved again would be written
+		// back under its old, deleted identifier, allowing a cookie kept
+		// from before logout to resolve to the new user's session (session
+		// fixation). The ID is read before it is cleared so erase targets
+		// the real file; a session that was never persisted has an empty ID
+		// and no file to remove.
+		if session.ID != "" {
+			if err := s.erase(session); err != nil && !os.IsNotExist(err) {
+				return err
+			}
+			session.ID = ""
 		}
 		http.SetCookie(w, NewCookie(session.Name(), "", session.Options))
 		return nil
