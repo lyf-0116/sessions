@@ -130,18 +130,41 @@ type Registry struct {
 //
 // It returns a new session if there are no sessions registered for the name.
 func (s *Registry) Get(store Store, name string) (session *Session, err error) {
+	return s.getOrNew(store, name)
+}
+
+// getOrNew registers and returns a session for the given name and session
+// store.
+//
+// It reuses the session already registered for the name (including any decode
+// error) instead of producing an unregistered instance, so writes made through
+// the store-level New() are persisted by Save() alongside writes made through
+// Get().
+func (s *Registry) getOrNew(store Store, name string) (*Session, error) {
 	if !isCookieNameValid(name) {
 		return nil, fmt.Errorf("sessions: invalid character in cookie name: %s", name)
 	}
 	if info, ok := s.sessions[name]; ok {
-		session, err = info.s, info.e
-	} else {
-		session, err = store.New(s.request, name)
-		session.name = name
-		s.sessions[name] = sessionInfo{s: session, e: err}
+		info.s.store = store
+		return info.s, info.e
 	}
+	type sessionBuilder interface {
+		newSession(r *http.Request, name string) (*Session, error)
+	}
+	var (
+		session *Session
+		err     error
+	)
+	if builder, ok := store.(sessionBuilder); ok {
+		session, err = builder.newSession(s.request, name)
+	} else {
+		// Third-party stores keep implementing New() directly.
+		session, err = store.New(s.request, name)
+	}
+	session.name = name
 	session.store = store
-	return
+	s.sessions[name] = sessionInfo{s: session, e: err}
+	return session, err
 }
 
 // Save saves all sessions registered for the current request.

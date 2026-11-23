@@ -28,8 +28,14 @@ type Store interface {
 
 	// New should create and return a new session.
 	//
-	// Note that New should never return a nil session, even in the case of
-	// an error if using the Registry infrastructure to cache the session.
+	// The built-in CookieStore and FilesystemStore register the result in the
+	// per-request registry, making New() and Get() return the same instance for
+	// a given name within a request. Third-party implementations may still
+	// build the session directly: Registry calls New() on a cache miss and
+	// performs the registration itself.
+	//
+	// Note that New should never return a nil session, even in the case of an
+	// error, because the Registry caches the session together with the error.
 	New(r *http.Request, name string) (*Session, error)
 
 	// Save should persist session to the underlying store implementation.
@@ -82,12 +88,20 @@ func (s *CookieStore) Get(r *http.Request, name string) (*Session, error) {
 	return GetRegistry(r).Get(s, name)
 }
 
-// New returns a session for the given name without adding it to the registry.
+// New returns a session for the given name after adding it to the registry.
 //
-// The difference between New() and Get() is that calling New() twice will
-// decode the session data twice, while Get() registers and reuses the same
-// decoded session after the first call.
+// New() and Get() now share the per-request registry: both register the
+// session under the given name and reuse the same instance on subsequent
+// calls, so writes made through either entry point are persisted together by
+// Save(). Previously New() returned an unregistered instance whose writes
+// could be silently dropped when Get() had already registered the same name.
 func (s *CookieStore) New(r *http.Request, name string) (*Session, error) {
+	return GetRegistry(r).getOrNew(s, name)
+}
+
+// newSession builds a fresh session and decodes the incoming cookie, without
+// touching the registry. It is invoked by the registry on a cache miss.
+func (s *CookieStore) newSession(r *http.Request, name string) (*Session, error) {
 	session := NewSession(s, name)
 	opts := *s.Options
 	session.Options = &opts
@@ -185,10 +199,15 @@ func (s *FilesystemStore) Get(r *http.Request, name string) (*Session, error) {
 	return GetRegistry(r).Get(s, name)
 }
 
-// New returns a session for the given name without adding it to the registry.
-//
+// New returns a session for the given name after adding it to the registry.
 // See CookieStore.New().
 func (s *FilesystemStore) New(r *http.Request, name string) (*Session, error) {
+	return GetRegistry(r).getOrNew(s, name)
+}
+
+// newSession builds a fresh session and loads it from disk, without touching
+// the registry. It is invoked by the registry on a cache miss.
+func (s *FilesystemStore) newSession(r *http.Request, name string) (*Session, error) {
 	session := NewSession(s, name)
 	opts := *s.Options
 	session.Options = &opts

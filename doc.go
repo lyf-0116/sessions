@@ -201,7 +201,9 @@ at once: it's sessions.Save(). Here's an example:
 		}
 	}
 
-This is possible because when we call Get() from a session store, it adds the
-session to a common registry. Save() uses it to save all registered sessions.
+This is possible because Get() and New() from a session store add the session
+to a common registry keyed by the session name: repeated calls during a
+request return the same registered instance. Save() uses the registry to save
+all registered sessions.
 */
 package sessions
