@@ -99,6 +99,16 @@ type sessionInfo struct {
 	e error
 }
 
+// sessionKey identifies a registered session by the store that owns it and
+// its session name. Keying on both (instead of the name alone) keeps sessions
+// created by different stores with the same name isolated: a session always
+// stays bound to its owning store, so server-side data can never be re-bound
+// to, and emitted by, a client-visible store such as the CookieStore.
+type sessionKey struct {
+	store Store
+	name  string
+}
+
 // contextKey is the type used to store the registry in the context.
 type contextKey int
 
@@ -114,7 +124,7 @@ func GetRegistry(r *http.Request) *Registry {
 	}
 	newRegistry := &Registry{
 		request:  r,
-		sessions: make(map[string]sessionInfo),
+		sessions: make(map[sessionKey]sessionInfo),
 	}
 	*r = *r.WithContext(context.WithValue(ctx, registryKey, newRegistry))
 	return newRegistry
@@ -123,38 +133,40 @@ func GetRegistry(r *http.Request) *Registry {
 // Registry stores sessions used during a request.
 type Registry struct {
 	request  *http.Request
-	sessions map[string]sessionInfo
+	sessions map[sessionKey]sessionInfo
 }
 
 // Get registers and returns a session for the given name and session store.
 //
-// It returns a new session if there are no sessions registered for the name.
+// Sessions are cached per (store, name) pair. A name reused by a different
+// store resolves to an independent session owned by that store rather than
+// reusing and re-binding another store's session.
 func (s *Registry) Get(store Store, name string) (session *Session, err error) {
 	if !isCookieNameValid(name) {
 		return nil, fmt.Errorf("sessions: invalid character in cookie name: %s", name)
 	}
-	if info, ok := s.sessions[name]; ok {
+	key := sessionKey{store: store, name: name}
+	if info, ok := s.sessions[key]; ok {
 		session, err = info.s, info.e
 	} else {
 		session, err = store.New(s.request, name)
 		session.name = name
-		s.sessions[name] = sessionInfo{s: session, e: err}
+		s.sessions[key] = sessionInfo{s: session, e: err}
 	}
-	session.store = store
 	return
 }
 
 // Save saves all sessions registered for the current request.
 func (s *Registry) Save(w http.ResponseWriter) error {
 	var errMulti MultiError
-	for name, info := range s.sessions {
+	for key, info := range s.sessions {
 		session := info.s
 		if session.store == nil {
 			errMulti = append(errMulti, fmt.Errorf(
-				"sessions: missing store for session %q", name))
+				"sessions: missing store for session %q", key.name))
 		} else if err := session.store.Save(s.request, w, session); err != nil {
 			errMulti = append(errMulti, fmt.Errorf(
-				"sessions: error saving session %q -- %v", name, err))
+				"sessions: error saving session %q -- %v", key.name, err))
 		}
 	}
 	if errMulti != nil {
